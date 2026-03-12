@@ -1,90 +1,152 @@
 # Computed Skills
 
-**When the prompt is a program's output, not a file you wrote.**
+## What's a skill?
 
-AI agent skills are markdown files. You write instructions, the LLM follows them. Computed skills flip this: a Python program analyzes context and *generates* a tailored markdown prompt for each invocation.
+A skill is a markdown file that tells an AI agent what to do. You write instructions, the agent follows them.
+
+```markdown
+# SKILL.md
+
+When reviewing code:
+1. Check for bugs
+2. Check for security issues
+3. Check for consistency
+```
+
+This works. The agent reads it, does what it says. Every time, the same instructions.
+
+## The problem
+
+The same instructions fire no matter what.
+
+Changed 2 login files? "Check for bugs, security, consistency."
+Changed 40 config files? "Check for bugs, security, consistency."
+
+The agent can't prioritize because you didn't prioritize. You wrote one set of instructions for every possible situation.
+
+It gets worse when skills manage data. Say your agent tracks mistakes it made — 87 entries across 3 files. Every session, the agent re-reads all 1,200 lines to check for duplicates before logging a new one. That's the agent doing data parsing. Slowly. Expensively. When Python could do it in milliseconds.
+
+## Computed skills
+
+What if the skill was a program that *generates* the instructions?
 
 ```
-Static:    SKILL.md (same every time) ────────────────→ LLM
-Computed:  SKILL.md → Python (analyzes context) → Markdown → LLM
+Skill (static):    Markdown ───────────────────────→ Agent
+Skill (computed):  Markdown → Script → Markdown ──→ Agent
 ```
 
-The LLM still receives markdown — that's its native format. But the markdown is *computed*, not *written*.
+The agent still receives markdown. That doesn't change. But the markdown comes from a script that looked at the situation first.
 
-No framework. No dependencies. Just Python's stdlib and the `!`command`` syntax that skill systems already support.
-
-## Why
-
-Static skills break when:
-- The **same checklist fires** for 2 auth files and 40 config files
-- The **LLM burns tokens** parsing structured data it could receive pre-digested
-- You want the skill to **remember** what happened last time
-- The "what to do" depends on "what's happening right now"
-
-## How It Works
-
-A computed skill's SKILL.md is a thin shell:
+The SKILL.md becomes a one-liner that calls the script:
 
 ```yaml
 ---
-name: smart-review
+name: code-review
 description: Context-aware code review
 ---
 
 !`python3 ${CLAUDE_SKILL_DIR}/scripts/generate.py $ARGUMENTS`
 ```
 
-The `!`command`` syntax runs the script *before* the prompt reaches the LLM. Stdout becomes the instructions. The Python script analyzes context, consults persistent state, picks a strategy, and generates tailored markdown.
+The `!`command`` syntax runs the script before the agent sees anything. The script prints markdown to stdout. That output becomes the instructions.
 
-## Examples
+## What the script does
 
-### smart-review
+The script is where the thinking happens. It can:
 
-A code review skill that reads git state and generates a different review prompt every time:
+**Read context.** What files changed? Are they security-sensitive? Is this a big refactor or a small fix?
 
-- 2 auth files → deep line-by-line review, Safety lens at 50%
-- 22 config files → architectural review, Consistency lens at 35%
-- Same change reviewed twice → adds "Fresh Eyes" pass to avoid blind spots
+**Pick a strategy.** 2 auth files → focus on security. 40 config files → focus on consistency. Test-only changes → focus on correctness.
 
-The SKILL.md is 5 lines. The Python brain is 400 lines.
+**Remember past runs.** A JSON file tracks what happened last time. Used the same strategy twice? Add a "fresh eyes" pass. Past reviews missed error handling? Weight that higher.
 
-### self-improve
+**Pre-digest data.** Instead of the agent parsing 1,200 lines of structured entries, the script does it and hands the agent a summary: "4 entries need promotion, 12 are stale, here's the next sequence number."
 
-A learning capture system with 5 modes. Manages 87 structured entries across 3 files — the kind of data an LLM would waste tokens re-parsing every session:
+The agent gets instructions tailored to right now, not instructions written for every possible situation.
 
-| Mode | Python does | LLM does |
-|---|---|---|
-| `always-on` | Parse all entries, build pattern index, surface alerts | Make judgment calls on what to log |
-| `status` | Dashboard: counts, promotion queue, stale entries | Present to user, execute actions |
-| `check <key>` | Exact + fuzzy Pattern-Key lookup | Decide increment vs create new |
-| `drift` | Scan daily logs against principles for drift signals | Deeper semantic check |
-| `triage` | Age-calculate entries, bucket stale vs very-stale | Decide resolve/close/keep per entry |
+## Example: code review
 
-### check-pattern
+A static code review skill gives the same checklist every time. The computed version reads git and adapts.
 
-A hidden skill (`user-invocable: false`) the agent invokes silently before logging new entries. Calls the self-improve backend with `check` mode. Returns "increment existing," "did you mean [similar key]?", or "safe to create."
+**2 auth files changed:**
+```
+Review Strategy: deep (line-by-line)
+Signals: security-sensitive files detected
 
-This is a skill-to-skill pipeline — one computed skill referencing another.
+Lens weights:
+- Safety       ██████████░░░░░░░░░░ 50%  ← focus here
+- Correctness  ██████░░░░░░░░░░░░░░ 30%
+- Robustness   ███░░░░░░░░░░░░░░░░░ 15%
+- Consistency  █░░░░░░░░░░░░░░░░░░░  5%
 
-## When To Use
+⚠ Security Alert: check for hardcoded secrets, .env exposure
+```
 
-**Keep static markdown** when instructions don't change. Style guides, deploy checklists, commit formats.
+**22 config files changed:**
+```
+Review Strategy: architectural (forest over trees)
+Signals: config-heavy change, possible refactor
 
-**Use computed skills** when:
-- Strategy should adapt based on live context
-- The skill works with structured data (logs, entries, diffs)
-- The LLM wastes tokens parsing instead of thinking
-- You want memory across invocations
+Lens weights:
+- Consistency  ███████░░░░░░░░░░░░░ 35%  ← focus here
+- Correctness  ██████░░░░░░░░░░░░░░ 30%
+- Robustness   ████░░░░░░░░░░░░░░░░ 20%
+- Safety       ███░░░░░░░░░░░░░░░░░ 15%
+```
 
-## The Writeup
+Same skill. Different instructions. Because the script looked at the git diff before generating them.
 
-See [paper.md](paper.md) for the full developer writeup — the problem, what we built, the separation of concerns, computation levels (0-5), and limitations.
+## Example: learning capture
 
-## Requirements
+An agent that tracks its own mistakes across sessions. Static version: 214 lines of instructions telling the agent how to parse entries, find duplicates, count recurrences.
 
-- Python 3.8+
-- An agent skill system that supports `!`command`` or equivalent shell injection
-- Tested with [Claude Code](https://claude.ai/claude-code) and [OpenClaw](https://openclaw.com)
+Computed version: Python parses everything, the agent gets a summary.
+
+**What the agent used to do (every session):**
+- Read 1,200 lines of structured entries
+- Scan for matching keys manually
+- Count recurrences by reading text
+- Find entries due for promotion
+- Check for stale entries
+
+**What Python does now (in <100ms):**
+- Parses all entries into a hash index
+- Finds promotion candidates (recurrence >= 2)
+- Flags stale entries (>21 days, never recurred)
+- Computes next entry sequence numbers
+- Does exact + fuzzy matching on duplicate keys
+
+The agent gets: "Here are the 4 entries due for promotion, here are the 12 stale entries, here's the Pattern-Key index. Now make the judgment calls."
+
+## When to use which
+
+**Static skills** are the right default. They're simple, readable, anyone can edit them.
+
+Use them when: instructions don't change. Style guides. Deploy checklists. Commit formats.
+
+**Computed skills** are for when static breaks down.
+
+Use them when:
+- What to do depends on what's happening right now
+- The agent parses structured data that code could pre-digest
+- You want the skill to remember past runs
+- Different contexts need different strategies
+
+## How to build one
+
+1. Write the skill in static markdown first. Get the instructions right.
+2. Notice what changes between invocations. What context matters?
+3. Write a script that generates the markdown based on that context.
+4. Replace the SKILL.md body with the `!`command`` call.
+5. Add a state file (JSON) if you want memory across runs.
+
+The script outputs markdown to stdout. That's the whole interface. No framework, no SDK — just print what you want the agent to read.
+
+## What you need
+
+- Python 3.8+ (or any language that prints to stdout)
+- A skill system that supports `!`command`` or equivalent
+- Works with [Claude Code](https://claude.ai/claude-code) and [OpenClaw](https://openclaw.com)
 
 ## License
 
