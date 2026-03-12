@@ -48,7 +48,7 @@ description: Context-aware code review
 !`python3 ${CLAUDE_SKILL_DIR}/scripts/generate.py $ARGUMENTS`
 ```
 
-The `!`command`` syntax runs the script before the agent sees anything. The script prints markdown to stdout. That output becomes the instructions.
+The [`!`command`` syntax](https://code.claude.com/docs/en/skills#inject-dynamic-context) is a preprocessing step built into the skill system. It runs shell commands before the skill content reaches the agent, and replaces the command with its output. The script prints markdown to stdout. That output becomes the instructions.
 
 ## What the script does
 
