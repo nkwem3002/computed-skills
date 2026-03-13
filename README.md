@@ -118,6 +118,22 @@ A sub-skill called before logging a new entry. The script checks if the pattern 
 
 The interface is just stdout. No framework, no SDK, any language works.
 
+### Passing arguments
+
+`$ARGUMENTS` in the SKILL.md is a text substitution — both Claude Code and OpenClaw replace it with the invocation arguments *before* the shell command runs. Your Python script receives them via `sys.argv`.
+
+**OpenClaw 2026.3.12+ caveat:** The shell injection scanner checks Python file contents too. If `$ARGUMENTS` appears anywhere in your `.py` file — even in a comment or docstring — it gets flagged. Keep `$ARGUMENTS` in SKILL.md only, never in Python code.
+
+For maximum compatibility, support both `sys.argv` (from shell substitution) and the `ARGUMENTS` env var (set by some runtimes):
+
+```python
+def main():
+    # sys.argv primary (works on Claude Code + OpenClaw via $ARGUMENTS substitution)
+    # os.environ fallback (some runtimes set ARGUMENTS as env var)
+    args_str = os.environ.get("ARGUMENTS", "").strip()
+    args = args_str.split() if args_str else sys.argv[1:]
+```
+
 ### Error handling
 
 If the script crashes, the agent gets the traceback as its instructions (or nothing). For production skills, wrap your main function:

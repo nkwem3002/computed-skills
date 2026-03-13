@@ -733,7 +733,9 @@ def generate_triage_prompt(learnings, errors, features):
 # ── Main ──────────────────────────────────────────────────────────
 
 def main():
-    args = sys.argv[1:]
+    # Support both: ARGUMENTS env var (OpenClaw/Claude Code skill) and sys.argv (direct CLI)
+    args_str = os.environ.get("ARGUMENTS", "").strip()
+    args = args_str.split() if args_str else sys.argv[1:]
     mode = args[0] if args else "always-on"
 
     state = load_state()
