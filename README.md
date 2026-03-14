@@ -55,7 +55,7 @@ The [`!`command`` syntax](https://code.claude.com/docs/en/skills#inject-dynamic-
 
 ## Examples
 
-This repo includes three working examples from a production agent system.
+This repo includes three working examples from a production agent system that runs 15 skills (11 computed) on a 24/7 autonomous AI agent.
 
 ### [`smart-review`](examples/smart-review) — Adaptive code review
 
@@ -97,6 +97,64 @@ A sub-skill called before logging a new entry. The script checks if the pattern 
 
 **Key file:** [`examples/check-pattern/SKILL.md`](examples/check-pattern/SKILL.md) — note how it reuses the self-improve generator with a different argument (`check $ARGUMENTS`).
 
+## Computed-static hybrid
+
+A third pattern for skills that are behavioral instructions but should only appear conditionally. The Python script wraps plain English inside if/else branches based on system state — the agent only sees the relevant branch.
+
+```python
+def generate():
+    hours_since = check_staleness()
+
+    if hours_since > 168:  # 7+ days — full instructions
+        print("# Skill — ATTENTION NEEDED\n")
+        print("You haven't done X in over 7 days. Here's how:")
+        print("1. ...")
+    elif hours_since > 24:  # gentle reminder
+        print("Reminder: X is due.")
+    else:  # recent — one line
+        print("X is current.")
+```
+
+This solves a real problem: agents ignore "always-on" mandates buried in long static instructions. The hybrid pattern makes the LLM only see what's relevant right now. Used in production for decision tracking and deliberation logging.
+
+## Multi-mode pattern
+
+Most computed skills support multiple modes via arguments:
+
+```python
+def main():
+    args_str = os.environ.get("ARGUMENTS", "").strip()
+    args = args_str.split() if args_str else sys.argv[1:]
+    mode = args[0] if args else ""
+
+    if mode == "status":
+        # Dashboard mode — verbose, for manual /command invocation
+        generate_status()
+    elif mode == "heartbeat":
+        # Silent unless problems found — for periodic checks
+        generate_heartbeat()
+    else:
+        # Default — always-on context injection
+        generate_default()
+```
+
+Convention: `heartbeat` mode outputs nothing when everything is OK. Only speak up when there's something to act on — silence means healthy.
+
+## Autonomous dispatch (OpenClaw)
+
+On [OpenClaw](https://openclaw.ai), computed skills can be wired into autonomous systems that dispatch agent runs without LLM involvement, using the [webhook API](https://openclaw.ai/docs/automation/webhook):
+
+```
+System cron (every 30m) → Python checks what's due
+  → Calls skill's generate.py to pick tasks
+  → POSTs to /hooks/agent with task prompt + model override
+  → Agent runs on cheap model, writes results to files
+```
+
+The skill's Python decides *what* to do. The webhook decides *when* to act. The dispatched agent handles the *how*. No LLM decides whether to check — it's deterministic scheduling with LLM-powered execution.
+
+This pattern doesn't apply to Claude Code (no webhook API), but the computed skill itself works the same on both platforms — only the dispatch layer is OpenClaw-specific.
+
 ## When to use computed skills
 
 **Start with static.** Static skills are simpler, readable, and easy to edit. Use them for instructions that don't change: style guides, deploy checklists, commit formats.
@@ -107,6 +165,12 @@ A sub-skill called before logging a new entry. The script checks if the pattern 
 - The agent is parsing structured data that code could pre-digest
 - You want the skill to remember and adapt across runs
 - Different contexts genuinely need different strategies
+
+**Switch to hybrid when:**
+
+- The skill is behavioral (plain English instructions) but some branches are irrelevant most of the time
+- The agent keeps ignoring "always-on" mandates because they're buried in long documents
+- You want escalating urgency based on how long something has been neglected
 
 ## How to build one
 
