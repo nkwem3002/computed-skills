@@ -255,6 +255,24 @@ Three working examples from a production agent running 15 skills (11 computed) o
 | [`self-improve`](examples/self-improve) | Computed + multi-mode | Parses 87+ entries, detects recurrence, flags promotions |
 | [`check-pattern`](examples/check-pattern) | Computed (sub-skill) | Duplicate detection — reuses self-improve's generator |
 
+## Platform limitations we hit
+
+Running computed skills in production on a 24/7 agent revealed three gaps in current platforms:
+
+### Bootstrap files don't support dynamic injection
+
+Skills support `!`command`` but bootstrap files (AGENTS.md, HEARTBEAT.md, etc.) don't. These files define the agent's identity, rules, and behavior but they're always static. We wanted time-aware instructions, conditional sections based on system state, and pre-computed file paths injected at session start. Had to work around it by building computed skills that duplicate what bootstrap files should do natively.
+
+### All session types see all context
+
+Subagents, heartbeats, and the main conversation all receive the same bootstrap files. A research subagent sees blog publishing rules meant for the main session and acts on them. We spent significant time adding "off-limits" instructions to counteract what other parts of the context say. A session-type filter on bootstrap injection would prevent this entirely.
+
+### LLMs can't do time math
+
+Every agent platform injects a "current date" but not the current time, timezone conversion, or countdown to scheduled events. LLMs consistently get timezone math wrong. We built a Python script that injects exact times and countdowns, but this should be a platform primitive.
+
+**Feature request filed:** [openclaw/openclaw#...](https://github.com/openclaw/openclaw/issues) — if you're hitting the same problems, the patterns above are workarounds that work today.
+
 ## Prior art
 
 The [`!`command`` syntax](https://code.claude.com/docs/en/skills#inject-dynamic-context) is documented by Anthropic under "inject dynamic context" but rarely used for full prompt generation.
