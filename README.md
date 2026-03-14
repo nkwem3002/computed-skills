@@ -1,234 +1,271 @@
 # Computed Skills
 
-**Skills that write themselves based on what's happening right now.**
+**Skills that adapt to what's actually happening.**
+
+A static skill gives the same instructions every time. A computed skill runs a script first — analyzes the situation, pre-digests data, picks a strategy — then hands the agent tailored markdown. The agent never knows a script was involved.
 
 ```
-Static skill:    SKILL.md ──────────────────────────→ Agent reads markdown
-Computed skill:  SKILL.md → runs script → markdown ─→ Agent reads markdown
+Static:    SKILL.md ──────────────────────────→ Agent reads markdown
+Computed:  SKILL.md → runs script → markdown ─→ Agent reads markdown
 ```
 
-The agent always receives markdown. But with computed skills, that markdown comes from a script that analyzed the situation first — so the instructions adapt to context instead of being the same every time.
+Works with [Claude Code](https://claude.ai/claude-code) and [OpenClaw](https://openclaw.ai). Any language that prints to stdout.
 
-## Why
+## The problem
 
-Static skills give the same instructions regardless of context:
+A static skill for daily planning:
 
-- Changed 2 auth files? *"Check for bugs, security, consistency."*
-- Changed 40 config files? *"Check for bugs, security, consistency."*
+```markdown
+# Daily Focus
 
-The agent can't prioritize because the instructions don't. A script can look at the git diff, see that auth files changed, and tell the agent to focus 50% of its attention on security.
+Review your calendar and todo list. Identify the top 3 priorities.
+Consider deadlines, energy levels, and blocked tasks.
+```
 
-It gets worse when skills manage data. An agent tracking its own mistakes across 87 entries shouldn't re-read 1,200 lines every session to check for duplicates — Python can parse that in milliseconds and hand the agent a summary.
+The agent gets this whether you have 0 todos or 47. Whether it's Monday morning or Friday at 5pm. Whether you missed yesterday's deadlines or cleared everything.
 
-## How it works
+A computed version:
 
-A computed skill has the same structure as any skill, but the SKILL.md delegates to a script:
+```python
+# generate.py
+import json
+from datetime import datetime
+from pathlib import Path
+
+def generate():
+    todos = json.loads(Path("todos.json").read_text())
+    overdue = [t for t in todos if t["due"] < datetime.now().isoformat() and not t["done"]]
+    today = [t for t in todos if t["due"][:10] == datetime.now().strftime("%Y-%m-%d")]
+
+    if overdue:
+        print(f"# ⚠️ {len(overdue)} Overdue Tasks\n")
+        print("**Handle these first:**")
+        for t in overdue:
+            print(f"- {t['title']} (due {t['due'][:10]})")
+        print()
+
+    if today:
+        print(f"## Today's {len(today)} Tasks\n")
+        for t in today:
+            print(f"- {'~~' + t['title'] + '~~' if t['done'] else t['title']}")
+    elif not overdue:
+        print("# Clear day — no tasks due. Good time for deep work.")
+
+generate()
+```
+
+Now the agent sees "⚠️ 3 Overdue Tasks" on a bad day and "Clear day" on a good one. Same skill, different instructions.
+
+## Quick start
+
+**1. Create the skill:**
 
 ```
 my-skill/
-├── SKILL.md              # Thin shell — calls the script
+├── SKILL.md
 └── scripts/
-    └── generate.py       # The brain — outputs markdown to stdout
+    └── generate.py
 ```
 
-The SKILL.md is a one-liner:
+**2. SKILL.md** (the thin shell):
 
 ```yaml
 ---
-name: smart-review
-description: Context-aware code review that adapts based on what changed
+name: my-skill
+description: What it does and when to trigger it
 ---
 
 !`python3 ${CLAUDE_SKILL_DIR}/scripts/generate.py $ARGUMENTS`
 ```
 
-The [`!`command`` syntax](https://code.claude.com/docs/en/skills#inject-dynamic-context) is a preprocessing directive. It runs the shell command before the agent sees anything, and replaces itself with the command's stdout. The agent never knows a script was involved — it just sees tailored markdown.
-
-### What the script can do
-
-| Capability | Example |
-|---|---|
-| **Read context** | Check `git diff`, count files, detect file types |
-| **Pick a strategy** | Auth files → security focus. Config files → consistency focus |
-| **Pre-digest data** | Parse 1,200 lines of entries, hand the agent a 20-line summary |
-| **Remember past runs** | Track state in a JSON file between invocations |
-
-## Examples
-
-This repo includes three working examples from a production agent system that runs 15 skills (11 computed) on a 24/7 autonomous AI agent.
-
-### [`smart-review`](examples/smart-review) — Adaptive code review
-
-The script reads git state and picks a review strategy:
-
-```
-2 auth files changed         →  "Security Review: check for hardcoded secrets,
-                                  validate input sanitization, verify auth on new routes"
-
-22 config files changed      →  "Configuration Audit: check for breaking changes,
-                                  validate YAML/JSON syntax, look for secrets in config"
-
-3 test files in a project    →  "Test Quality Review: check edge cases,
-without established tests         look for flaky patterns, verify assertion specificity"
-```
-
-It also tracks past runs — if the same strategy fires twice in a row, it adds a "fresh eyes" pass. If past reviews had misses, those get highlighted.
-
-**Key file:** [`examples/smart-review/scripts/generate.py`](examples/smart-review/scripts/generate.py)
-
-### [`self-improve`](examples/self-improve) — Learning capture with data pre-processing
-
-An agent that logs its own mistakes, detects recurrence, and promotes recurring patterns to permanent docs. The static version was 214 lines of instructions telling the agent how to parse entries and count duplicates. The computed version offloads all bookkeeping to Python:
-
-| What Python does (<100ms) | What the agent gets |
-|---|---|
-| Parses all entries into a hash index | "Here are 4 entries due for promotion" |
-| Finds promotion candidates (count >= 2) | "Here are 12 stale entries to triage" |
-| Does exact + fuzzy duplicate matching | "Next sequence number: LRN-20260313-004" |
-| Detects behavioral drift against principles | "Drift signal: over-explaining (3 hits)" |
-
-The agent focuses on judgment calls — *should* this be promoted? *is* this a real drift? — not data parsing.
-
-**Key file:** [`examples/self-improve/scripts/generate.py`](examples/self-improve/scripts/generate.py)
-
-### [`check-pattern`](examples/check-pattern) — Duplicate prevention helper
-
-A sub-skill called before logging a new entry. The script checks if the pattern already exists (exact match), looks for similar keys (fuzzy match), and tells the agent whether to create a new entry or increment an existing one.
-
-**Key file:** [`examples/check-pattern/SKILL.md`](examples/check-pattern/SKILL.md) — note how it reuses the self-improve generator with a different argument (`check $ARGUMENTS`).
-
-## Computed-static hybrid
-
-A third pattern for skills that are behavioral instructions but should only appear conditionally. The Python script wraps plain English inside if/else branches based on system state — the agent only sees the relevant branch.
+**3. generate.py** (the brain):
 
 ```python
-def generate():
-    hours_since = check_staleness()
+#!/usr/bin/env python3
+import os, sys
 
-    if hours_since > 168:  # 7+ days — full instructions
-        print("# Skill — ATTENTION NEEDED\n")
-        print("You haven't done X in over 7 days. Here's how:")
-        print("1. ...")
-    elif hours_since > 24:  # gentle reminder
-        print("Reminder: X is due.")
-    else:  # recent — one line
-        print("X is current.")
-```
-
-This solves a real problem: agents ignore "always-on" mandates buried in long static instructions. The hybrid pattern makes the LLM only see what's relevant right now. Used in production for decision tracking and deliberation logging.
-
-## Multi-mode pattern
-
-Most computed skills support multiple modes via arguments:
-
-```python
 def main():
     args_str = os.environ.get("ARGUMENTS", "").strip()
     args = args_str.split() if args_str else sys.argv[1:]
     mode = args[0] if args else ""
 
     if mode == "status":
-        # Dashboard mode — verbose, for manual /command invocation
-        generate_status()
-    elif mode == "heartbeat":
-        # Silent unless problems found — for periodic checks
-        generate_heartbeat()
+        print("# Status Dashboard\n")
+        # ... verbose output for manual invocation
     else:
-        # Default — always-on context injection
-        generate_default()
+        print("# Default Mode\n")
+        # ... context-aware instructions
+
+if __name__ == "__main__":
+    main()
 ```
 
-Convention: `heartbeat` mode outputs nothing when everything is OK. Only speak up when there's something to act on — silence means healthy.
+That's it. The `!`command`` syntax is a preprocessing directive — it runs before the agent sees anything and replaces itself with stdout.
 
-## Autonomous dispatch (OpenClaw)
+## Real example: self-improve
 
-On [OpenClaw](https://openclaw.ai), computed skills can be wired into autonomous systems that dispatch agent runs without LLM involvement, using the [webhook API](https://openclaw.ai/docs/automation/webhook):
+This is from a production agent that tracks its own mistakes across 87+ entries. The static version was 214 lines of instructions telling the agent how to parse entries and count duplicates. The computed version:
+
+```python
+# What Python does in <100ms:
+entries = parse_all_entries()           # Parse 1,200 lines of markdown
+dupes = find_duplicates(new_key)        # Exact + fuzzy matching
+promotable = [e for e in entries if e["recurrence"] >= 2]
+stale = [e for e in entries if days_since(e["date"]) > 30]
+```
 
 ```
-System cron (every 30m) → Python checks what's due
-  → Calls skill's generate.py to pick tasks
-  → POSTs to /hooks/agent with task prompt + model override
-  → Agent runs on cheap model, writes results to files
+# What the agent sees:
+
+## Self-Improve Status
+
+**LEARNINGS** — 68 total, 61 open
+**ERRORS** — 23 total, 21 open
+
+## Due for Promotion (Recurrence >= 2)
+- [workspace-path-confusion] Count: 2 — verify paths before operations
+
+## Stale (>30 days, no recurrence)
+- [whatsapp-gateway-patterns] — resolved, service removed
 ```
 
-The skill's Python decides *what* to do. The webhook decides *when* to act. The dispatched agent handles the *how*. No LLM decides whether to check — it's deterministic scheduling with LLM-powered execution.
+The agent focuses on judgment — *should* this be promoted? *is* this still relevant? — not data parsing.
 
-This pattern doesn't apply to Claude Code (no webhook API), but the computed skill itself works the same on both platforms — only the dispatch layer is OpenClaw-specific.
+**Full source:** [`examples/self-improve/scripts/generate.py`](examples/self-improve/scripts/generate.py)
 
-## When to use computed skills
+## Three patterns
 
-**Start with static.** Static skills are simpler, readable, and easy to edit. Use them for instructions that don't change: style guides, deploy checklists, commit formats.
+### 1. Computed — script generates context-aware instructions
 
-**Switch to computed when:**
+The script reads the environment and outputs different instructions.
 
-- Instructions should change based on what's happening right now
-- The agent is parsing structured data that code could pre-digest
-- You want the skill to remember and adapt across runs
-- Different contexts genuinely need different strategies
+```
+2 auth files changed  →  "Security Review: check for secrets, validate auth"
+40 config files       →  "Config Audit: check YAML syntax, look for breaking changes"
+```
 
-**Switch to hybrid when:**
+Best for: code review, data analysis, anything where context determines strategy.
 
-- The skill is behavioral (plain English instructions) but some branches are irrelevant most of the time
-- The agent keeps ignoring "always-on" mandates because they're buried in long documents
-- You want escalating urgency based on how long something has been neglected
+**Example:** [`examples/smart-review`](examples/smart-review)
+
+### 2. Computed-static hybrid — conditional plain English
+
+The script wraps behavioral instructions in conditionals. The agent only sees the relevant branch.
+
+```python
+hours_since = check_staleness()
+
+if hours_since > 168:  # 7+ days
+    print("# ATTENTION: You haven't tracked decisions in 7 days.")
+    print("Initialize now: ...")
+    print("Then add nodes as conversation evolves.")
+elif hours_since > 24:
+    print("Reminder: decision tracking is due.")
+else:
+    print("Decision tracking is current.")
+```
+
+This solves a real problem: agents ignore "always-on" mandates buried in long static documents. The hybrid makes the LLM only see what's urgent right now.
+
+Best for: always-on behaviors, escalating reminders, conditional workflows.
+
+### 3. Autonomous dispatch (OpenClaw)
+
+On [OpenClaw](https://openclaw.ai), computed skills can be dispatched by a system cron without any LLM deciding to run them:
+
+```
+System cron (every 30m)
+  → Python calls generate.py to pick tasks
+  → POSTs to /hooks/agent with task prompt
+  → Agent runs on cheap model, writes results
+```
+
+The scheduling is deterministic (Python). The execution uses an LLM. The LLM never decides *whether* to work — only *how*.
+
+This doesn't apply to Claude Code (no webhook API). The computed skill itself works the same on both platforms — only the dispatch layer is OpenClaw-specific.
+
+## Multi-mode convention
+
+Most production computed skills support multiple modes via arguments:
+
+| Mode | Purpose | Output |
+|------|---------|--------|
+| *(no args)* | Default / always-on | Context-aware instructions |
+| `status` | Manual dashboard (`/command`) | Verbose report |
+| `heartbeat` | Periodic health check | Silent unless problems found |
+
+The `heartbeat` convention matters: **output nothing when everything is OK.** Only speak up when there's something to act on. Silence means healthy.
+
+```yaml
+# SKILL.md — user can invoke with /my-skill or /my-skill status
+!`python3 ${CLAUDE_SKILL_DIR}/scripts/generate.py $ARGUMENTS`
+```
+
+## When to use what
+
+| Situation | Pattern |
+|-----------|---------|
+| Instructions never change | Static (plain markdown) |
+| Instructions depend on context (git state, file contents, time) | Computed |
+| Behavioral instructions that get ignored when too long | Hybrid |
+| Agent needs to parse structured data (logs, entries, state files) | Computed |
+| Skill should remember across runs | Computed + state file |
+| Skill should run autonomously on a schedule | Computed + dispatch (OpenClaw) |
+
+**Start static, switch to computed when you notice the agent doing work that code could do faster.**
 
 ## How to build one
 
 1. **Write the skill as static markdown first.** Get the instructions right.
-2. **Notice what changes between invocations.** What context matters? What's the agent doing that code could do faster?
-3. **Write a script that generates the markdown.** Read context, make decisions, print markdown to stdout.
-4. **Replace the SKILL.md body** with `!`python3 ${CLAUDE_SKILL_DIR}/scripts/generate.py $ARGUMENTS``
+2. **Notice what changes between invocations.** What context matters?
+3. **Write a script that generates the markdown.** Read context, make decisions, print to stdout.
+4. **Replace the SKILL.md body** with the `!`command`` invocation.
 5. **Add a state file** (JSON) if you want memory across runs.
-
-The interface is just stdout. No framework, no SDK, any language works.
 
 ### Passing arguments
 
-`$ARGUMENTS` in the SKILL.md is a text substitution — both Claude Code and OpenClaw replace it with the invocation arguments *before* the shell command runs. Your Python script receives them via `sys.argv`.
+`$ARGUMENTS` in SKILL.md is text substitution — replaced with invocation arguments *before* the shell runs.
 
-**OpenClaw 2026.3.12+ caveat:** The shell injection scanner checks Python file contents too. If `$ARGUMENTS` appears anywhere in your `.py` file — even in a comment or docstring — it gets flagged. Keep `$ARGUMENTS` in SKILL.md only, never in Python code.
-
-For maximum compatibility, support both `sys.argv` (from shell substitution) and the `ARGUMENTS` env var (set by some runtimes):
+**Important:** On OpenClaw 2026.3.12+, the scanner flags `$ARGUMENTS` in Python files (even in comments). Keep `$ARGUMENTS` in SKILL.md only. In Python, use:
 
 ```python
-def main():
-    # sys.argv primary (works on Claude Code + OpenClaw via $ARGUMENTS substitution)
-    # os.environ fallback (some runtimes set ARGUMENTS as env var)
-    args_str = os.environ.get("ARGUMENTS", "").strip()
-    args = args_str.split() if args_str else sys.argv[1:]
+args_str = os.environ.get("ARGUMENTS", "").strip()
+args = args_str.split() if args_str else sys.argv[1:]
 ```
 
 ### Error handling
 
-If the script crashes, the agent gets the traceback as its instructions (or nothing). For production skills, wrap your main function:
+If the script crashes, the agent gets nothing (or a traceback). For production skills:
 
 ```python
-def main():
-    try:
-        # ... your logic ...
-        print(prompt)
-    except Exception as e:
-        # Fallback: print static instructions so the agent isn't left empty-handed
-        print("# Code Review\n\nCheck for bugs, security issues, and consistency.")
-        print(f"\n<!-- generator error: {e} -->")
+try:
+    generate()
+except Exception as e:
+    print("# Fallback Instructions\n\nCheck for bugs and consistency.")
+    print(f"\n<!-- generator error: {e} -->")
 ```
+
+## Examples
+
+Three working examples from a production agent running 15 skills (11 computed) on a 24/7 autonomous system:
+
+| Example | Pattern | What it does |
+|---------|---------|-------------|
+| [`smart-review`](examples/smart-review) | Computed | Reads git diff, picks review strategy, tracks past runs |
+| [`self-improve`](examples/self-improve) | Computed + multi-mode | Parses 87+ entries, detects recurrence, flags promotions |
+| [`check-pattern`](examples/check-pattern) | Computed (sub-skill) | Duplicate detection — reuses self-improve's generator |
 
 ## Prior art
 
-The [`!`command`` syntax](https://code.claude.com/docs/en/skills#inject-dynamic-context) that makes this possible is documented by Anthropic under "inject dynamic context" — but it's easy to miss, and almost nobody uses it for full prompt generation.
+The [`!`command`` syntax](https://code.claude.com/docs/en/skills#inject-dynamic-context) is documented by Anthropic under "inject dynamic context" but rarely used for full prompt generation.
 
 As of March 2026:
 
-- **Anthropic's own [skills repo](https://github.com/anthropics/skills/)** (17 skills) — all static markdown, zero computed skills
-- **[SkillsMP](https://skillsmp.com)** (400K+ indexed skills) — no category or tag for computed/dynamic skills
-- **GitHub-wide code search** for `!`python` in SKILL.md files — returns two results: this repo and [vibereq](https://github.com/dipasqualew/vibereq)
+- **[Anthropic's skills repo](https://github.com/anthropics/skills/)** (17 skills) — all static, zero computed
+- **[SkillsMP](https://skillsmp.com)** (400K+ indexed) — no category for computed skills
+- **[vibereq](https://github.com/dipasqualew/vibereq)** — the only other project we've found using the pattern in production
 
-[vibereq](https://github.com/dipasqualew/vibereq) is the only other project we've found using the pattern in production. It injects requirements from checkpoint transcripts into code review skills via `!`python3 scripts/get-intents.py``, and has a meta-skill that generates new computed skills. They use the pattern but don't document it.
-
-Related but different approaches:
-
-- **[DSPy](https://dspy.ai/)** (Stanford) — programmatic prompt compilation via a framework. Same idea (programs generate prompts), but requires adopting a full SDK
-- **[Context engineering](https://martinfowler.com/articles/exploring-gen-ai/context-engineering-coding-agents.html)** — the broader concept of curating what the model sees. Computed skills are one implementation of this
+Related approaches: [DSPy](https://dspy.ai/) (programmatic prompt compilation via SDK), [context engineering](https://martinfowler.com/articles/exploring-gen-ai/context-engineering-coding-agents.html) (the broader concept).
 
 ## Requirements
 
